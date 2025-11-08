@@ -21,7 +21,6 @@ class GameEngine {
   bool gameOver = false;
   String winner = "";
 
-  List<int> killedGoats = [];
   bool isTigerKilling = false;
 
   int currentRound = 1;
@@ -41,6 +40,7 @@ class GameEngine {
   }
 
   int get unplacedGoats => maxGoats - totalGoatsPlaced;
+  bool get roundCompleted => _roundCompleted;
 
   void _initializePositions() {
     double step = boardSize / (gridSize - 1);
@@ -133,14 +133,27 @@ class GameEngine {
   List<Offset> validTigerMoves(int index) {
     Offset from = tigerPositions[index];
     List<Offset> moves = [];
+    
+    // Regular adjacent moves
     for (var to in adjacency[from]!) {
       if (!_isPositionOccupied(to)) {
         moves.add(to);
-      } else if (goatPositions.contains(to)) {
-        Offset? beyond = _dotBeyond(from, to);
-        if (beyond != null && !_isPositionOccupied(beyond)) moves.add(beyond);
       }
     }
+    
+    // Killing moves (jump over goats)
+    for (var adjacent in adjacency[from]!) {
+      // Check if adjacent position has a goat
+      bool hasGoat = goatPositions.any((goat) => (goat - adjacent).distance < 2.0);
+      
+      if (hasGoat) {
+        Offset? jumpPos = _getJumpPosition(from, adjacent);
+        if (jumpPos != null && !_isPositionOccupied(jumpPos)) {
+          moves.add(jumpPos);
+        }
+      }
+    }
+    
     return moves;
   }
 
@@ -153,201 +166,302 @@ class GameEngine {
     return moves;
   }
 
-  Offset? _dotBeyond(Offset from, Offset goat) {
+  Offset? _getJumpPosition(Offset from, Offset goat) {
+    // Calculate direction vector
     double dx = goat.dx - from.dx;
     double dy = goat.dy - from.dy;
+    
+    // Calculate position beyond the goat
     Offset beyond = Offset(goat.dx + dx, goat.dy + dy);
-    if (gridPoints.contains(beyond)) return beyond;
-    return null;
+    
+    // Check if beyond position is valid (exists on board and not occupied)
+    bool isValid = gridPoints.any((point) => (point - beyond).distance < 2.0);
+    
+    if (isValid) {
+      return beyond;
+    } else {
+      return null;
+    }
   }
 
   void handleTap(Offset tap) {
     if (gameOver || _roundCompleted) {
-      debugPrint('Cannot tap - game over: $gameOver, round completed: $_roundCompleted');
       return;
     }
 
     Offset snapped = snapToGrid(tap);
 
     if (tigerTurn) {
-      for (int i = 0; i < tigerPositions.length; i++) {
-        if (_isTapOnToken(tigerPositions[i], snapped)) {
-          selectedTigerIndex = i;
+      _handleTigerTap(snapped);
+    } else {
+      _handleGoatTap(snapped);
+    }
+  }
+
+  void _handleTigerTap(Offset snapped) {
+    // Select tiger
+    for (int i = 0; i < tigerPositions.length; i++) {
+      if (_isTapOnToken(tigerPositions[i], snapped)) {
+        selectedTigerIndex = i;
+        onSelectToken?.call();
+        onBoardUpdate?.call();
+        return;
+      }
+    }
+
+    // Move selected tiger
+    if (selectedTigerIndex != null && !isTigerKilling) {
+      List<Offset> moves = validTigerMoves(selectedTigerIndex!);
+      if (moves.contains(snapped)) {
+        _executeTigerMove(selectedTigerIndex!, snapped);
+      }
+    }
+  }
+
+  void _handleGoatTap(Offset snapped) {
+    // Place new goat
+    if (totalGoatsPlaced < maxGoats) {
+      if (!_isPositionOccupied(snapped)) {
+        goatPositions.add(snapped);
+        totalGoatsPlaced++;
+        onGoatMove?.call();
+        _checkRoundCompletion();
+        onBoardUpdate?.call();
+      }
+    } else {
+      // Select goat for movement
+      for (int i = 0; i < goatPositions.length; i++) {
+        if (_isTapOnToken(goatPositions[i], snapped)) {
+          selectedGoat = goatPositions[i];
           onSelectToken?.call();
           onBoardUpdate?.call();
           return;
         }
       }
-
-      if (selectedTigerIndex != null && !isTigerKilling) {
-        List<Offset> moves = validTigerMoves(selectedTigerIndex!);
+      
+      // Move selected goat
+      if (selectedGoat != null) {
+        List<Offset> moves = validGoatMoves();
         if (moves.contains(snapped)) {
-          Offset mid = _middleGoat(tigerPositions[selectedTigerIndex!] , snapped);
-          if (mid != Offset.zero && goatPositions.contains(mid)) {
-            int goatIdx = goatPositions.indexOf(mid);
-            onGoatKill?.call(goatIdx, tigerPositions[selectedTigerIndex!]);
-            goatPositions.removeAt(goatIdx);
-            goatsEaten++;
-            goatsKilledThisRound++;
-          }
-          tigerPositions[selectedTigerIndex!] = snapped;
-          selectedTigerIndex = null;
-          
-          onTigerMove?.call();
-          _checkRoundCompletion();
-          onBoardUpdate?.call();
-        }
-      }
-    } else {
-      if (totalGoatsPlaced < maxGoats) {
-        if (!_isPositionOccupied(snapped)) {
-          goatPositions.add(snapped);
-          totalGoatsPlaced++;
-          
+          int index = goatPositions.indexOf(selectedGoat!);
+          goatPositions[index] = snapped;
+          selectedGoat = null;
           onGoatMove?.call();
           _checkRoundCompletion();
           onBoardUpdate?.call();
         }
-      } else {
-        for (int i = 0; i < goatPositions.length; i++) {
-          if (_isTapOnToken(goatPositions[i], snapped)) {
-            selectedGoat = goatPositions[i];
-            onSelectToken?.call();
-            onBoardUpdate?.call();
-            return;
-          }
-        }
-        if (selectedGoat != null) {
-          List<Offset> moves = validGoatMoves();
-          if (moves.contains(snapped)) {
-            int index = goatPositions.indexOf(selectedGoat!);
-            goatPositions[index] = snapped;
-            selectedGoat = null;
-            
-            onGoatMove?.call();
-            _checkRoundCompletion();
-            onBoardUpdate?.call();
-          }
-        }
       }
     }
   }
 
-  Offset _middleGoat(Offset from, Offset to) {
-    Offset mid = Offset((from.dx + to.dx) / 2, (from.dy + to.dy) / 2);
-    for (var g in goatPositions) {
-      if ((g - mid).distance < 1) return g;
-    }
-    return Offset.zero;
-  }
-
-  void _checkRoundCompletion() {
-    // Don't check if round is already completed
-    if (_roundCompleted) return;
+  void _executeTigerMove(int tigerIndex, Offset toPosition) {
+    Offset fromPosition = tigerPositions[tigerIndex];
     
-    // Debug info
-    debugPrint('Checking round completion:');
-    debugPrint('  Goats eaten: $goatsEaten');
-    debugPrint('  Total goats placed: $totalGoatsPlaced');
-    debugPrint('  Max goats: $maxGoats');
-    debugPrint('  All tigers blocked: ${_allTigersBlocked()}');
-
-    // Round ends when:
-    // 1. Tigers eat 5 goats (Tigers win the round)
-    if (goatsEaten >= 5) {
-      debugPrint('Round completed: Tigers ate 5 goats');
-      _completeRound('Tigers Win Round $currentRound!');
-      return;
-    }
+    // Check if this is a killing move using adjacency
+    bool isKillingMove = _isKillingMove(fromPosition, toPosition);
     
-    // 2. Goats successfully block all tigers (Goats win the round)
-    // BUT only check this after all goats are placed on board
-    if (totalGoatsPlaced >= maxGoats) {
-      bool allTigersBlocked = _allTigersBlocked();
-      debugPrint('All goats placed - Tigers blocked: $allTigersBlocked');
+    if (isKillingMove) {
+      // CRITICAL FIX: Set isTigerKilling flag BEFORE the kill callback
+      isTigerKilling = true;
       
-      if (allTigersBlocked) {
-        debugPrint('Round completed: Goats blocked all tigers');
-        _completeRound('Goats Win Round $currentRound!');
-        return;
+      Offset? killedGoatPosition = _getKilledGoatPosition(fromPosition, toPosition);
+      
+      if (killedGoatPosition != null) {
+        int goatIndex = goatPositions.indexOf(killedGoatPosition);
+        
+        if (goatIndex != -1) {
+          // CRITICAL FIX: INCREMENT COUNTERS FIRST before anything else
+          goatsEaten++;
+          goatsKilledThisRound++;
+          
+          print('=== GOAT KILLED ===');
+          print('goatsEaten: $goatsEaten');
+          print('goatsKilledThisRound: $goatsKilledThisRound');
+          print('goatPositions before remove: ${goatPositions.length}');
+          
+          // Trigger kill callback AFTER incrementing counters
+          onGoatKill?.call(goatIndex, fromPosition);
+          
+          // Remove the killed goat
+          goatPositions.removeAt(goatIndex);
+          
+          print('goatPositions after remove: ${goatPositions.length}');
+        }
       }
     }
-
-    // 3. Additional condition: If goats can't make any legal moves and all are placed
-    if (totalGoatsPlaced >= maxGoats && _allGoatsBlocked()) {
-      debugPrint('Round completed: All goats are blocked');
-      _completeRound('Tigers Win Round $currentRound!');
-      return;
+    
+    // Move tiger
+    tigerPositions[tigerIndex] = toPosition;
+    selectedTigerIndex = null;
+    
+    // CRITICAL FIX: ALWAYS call onTigerMove for both regular and killing moves
+    onTigerMove?.call();
+    
+    // CRITICAL FIX: Reset isTigerKilling flag after move is complete
+    if (isKillingMove) {
+      isTigerKilling = false;
+      print('=== isTigerKilling reset to false ===');
     }
-
-    debugPrint('Round continues - no completion condition met');
-  }
-
-  void _completeRound(String roundWinner) {
-    if (_roundCompleted) return;
     
-    _roundCompleted = true;
-    gameOver = true;
-    winner = roundWinner;
-    
-    debugPrint('Round $currentRound completed: $winner - Goats killed: $goatsKilledThisRound');
-    
-    // Notify about round end with goats killed count
-    onRoundEnd?.call(currentRound, goatsKilledThisRound);
+    _checkRoundCompletion();
     onBoardUpdate?.call();
   }
 
+  bool _isKillingMove(Offset from, Offset to) {
+    // Get all adjacent positions from the starting point
+    List<Offset> adjacentPositions = adjacency[from] ?? [];
+    
+    // Check if the move goes through an adjacent goat to a position beyond
+    for (var adjacent in adjacentPositions) {
+      if (goatPositions.any((goat) => (goat - adjacent).distance < 2.0)) {
+        // This adjacent position has a goat, check if 'to' is the jump position
+        Offset? jumpPos = _getJumpPosition(from, adjacent);
+        if (jumpPos != null && (jumpPos - to).distance < 2.0) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  Offset? _getKilledGoatPosition(Offset from, Offset to) {
+    // Calculate the exact middle position
+    double midX = (from.dx + to.dx) / 2;
+    double midY = (from.dy + to.dy) / 2;
+    Offset middle = Offset(midX, midY);
+    
+    // Use a more generous threshold for position matching
+    for (var goat in goatPositions) {
+      double distance = (goat - middle).distance;
+      
+      if (distance < 5.0) { // Increased threshold to 5.0
+        return goat;
+      }
+    }
+    
+    return null;
+  }
+
+ void _checkRoundCompletion() {
+  if (_roundCompleted) {
+    print('❌ _checkRoundCompletion: Round already completed, skipping');
+    return;
+  }
+  
+  print('=== CHECKING ROUND COMPLETION ===');
+  print('Current Round: $currentRound');
+  print('goatsKilledThisRound: $goatsKilledThisRound / $maxGoats');
+  print('goatsEaten: $goatsEaten');
+  print('goatPositions.length: ${goatPositions.length}');
+  print('totalGoatsPlaced: $totalGoatsPlaced / $maxGoats');
+  print('_roundCompleted: $_roundCompleted');
+  print('gameOver: $gameOver');
+  
+  // FIXED: Condition 1 - All goats placed AND no goats left on board (by any means)
+  if (totalGoatsPlaced >= maxGoats && goatPositions.isEmpty) {
+    print('🎯 ROUND COMPLETED: Condition 1 - All goats eliminated from board!');
+    print('🎯 totalGoatsPlaced: $totalGoatsPlaced >= $maxGoats AND goatPositions.isEmpty: ${goatPositions.isEmpty}');
+    _completeRound('Tigers Dominated Round $currentRound!');
+    return;
+  }
+  
+  // Condition 2: All goats placed AND all tigers blocked (Goats win round)
+  bool allTigersBlocked = _allTigersBlocked();
+  if (totalGoatsPlaced >= maxGoats && allTigersBlocked) {
+    print('🎯 ROUND COMPLETED: Condition 2 - Goats blocked all tigers!');
+    print('🎯 totalGoatsPlaced: $totalGoatsPlaced >= $maxGoats AND allTigersBlocked: $allTigersBlocked');
+    _completeRound('Goats Protected Round $currentRound!');
+    return;
+  }
+
+  // Condition 3: All goats placed AND all goats blocked but tigers still have moves (Tigers win round)
+  bool allGoatsBlocked = _allGoatsBlocked();
+  bool tigersHaveMoves = !_allTigersBlocked();
+  if (totalGoatsPlaced >= maxGoats && allGoatsBlocked && tigersHaveMoves) {
+    print('🎯 ROUND COMPLETED: Condition 3 - Tigers trapped goats!');
+    print('🎯 totalGoatsPlaced: $totalGoatsPlaced >= $maxGoats AND allGoatsBlocked: $allGoatsBlocked AND tigersHaveMoves: $tigersHaveMoves');
+    _completeRound('Tigers Trapped Goats in Round $currentRound!');
+    return;
+  }
+  
+  print('❌ Round not completed - No conditions met');
+  print('---');
+}
+  void _completeRound(String roundWinner) {
+    if (_roundCompleted) return;
+    
+    print('🚀 === ROUND COMPLETION PROCESS STARTING ===');
+    print('🚀 Round Winner: $roundWinner');
+    print('🚀 Current Round: $currentRound');
+    print('🚀 goatsKilledThisRound: $goatsKilledThisRound');
+    print('🚀 Setting _roundCompleted = true');
+    
+    _roundCompleted = true;
+    
+    // CRITICAL FIX: Only set gameOver = true for the final round (Round 2)
+    gameOver = (currentRound == 2);
+    print('🚀 gameOver set to: $gameOver (currentRound == 2: ${currentRound == 2})');
+    
+    winner = roundWinner;
+    
+    // Notify about round end
+    print('🚀 Calling onRoundEnd callback with round: $currentRound, goatsKilled: $goatsKilledThisRound');
+    onRoundEnd?.call(currentRound, goatsKilledThisRound);
+    
+    print('🚀 Calling onBoardUpdate callback');
+    onBoardUpdate?.call();
+    
+    print('🚀 === ROUND COMPLETION PROCESS FINISHED ===');
+  }
+
   bool _allTigersBlocked() {
+    print('🐯 CHECKING IF ALL TIGERS ARE BLOCKED');
+    print('🐯 Number of tigers: ${tigerPositions.length}');
+    
     for (int i = 0; i < tigerPositions.length; i++) {
       List<Offset> moves = validTigerMoves(i);
+      print('🐯 Tiger $i at ${tigerPositions[i]} has ${moves.length} moves');
+      
       if (moves.isNotEmpty) {
-        debugPrint('Tiger $i at ${tigerPositions[i]} can move to: $moves');
+        print('🐯 Tiger $i CAN move - NOT all tigers blocked');
         return false;
       }
     }
-    debugPrint('All tigers are completely blocked!');
+    
+    print('🐯 ALL TIGERS ARE BLOCKED - no moves available');
     return true;
   }
 
   bool _allGoatsBlocked() {
-    // Only check if all goats are placed
-    if (totalGoatsPlaced < maxGoats) return false;
+    print('🐐 CHECKING IF ALL GOATS ARE BLOCKED');
+    print('🐐 totalGoatsPlaced: $totalGoatsPlaced / $maxGoats');
+    print('🐐 goatPositions.length: ${goatPositions.length}');
+    
+    if (totalGoatsPlaced < maxGoats) {
+      print('🐐 NOT all goats placed yet - returning false');
+      return false;
+    }
     
     for (var goat in goatPositions) {
       selectedGoat = goat;
       List<Offset> moves = validGoatMoves();
       selectedGoat = null;
       
+      print('🐐 Goat at $goat has ${moves.length} moves');
+      
       if (moves.isNotEmpty) {
-        debugPrint('Goat at $goat can move to: $moves');
+        print('🐐 Goat CAN move - NOT all goats blocked');
         return false;
       }
     }
-    debugPrint('All goats are completely blocked!');
+    
+    print('🐐 ALL GOATS ARE BLOCKED - no moves available');
     return true;
   }
 
-  void debugGameState() {
-    debugPrint('=== GAME STATE DEBUG ===');
-    debugPrint('Round: $currentRound');
-    debugPrint('Tiger Turn: $tigerTurn');
-    debugPrint('Total Goats Placed: $totalGoatsPlaced/$maxGoats');
-    debugPrint('Goats Eaten: $goatsEaten');
-    debugPrint('Game Over: $gameOver');
-    debugPrint('Round Completed: $_roundCompleted');
-    debugPrint('Tiger Positions: ${tigerPositions.length}');
-    debugPrint('Goat Positions: ${goatPositions.length}');
-    
-    // Check each tiger's possible moves
-    for (int i = 0; i < tigerPositions.length; i++) {
-      List<Offset> moves = validTigerMoves(i);
-      debugPrint('Tiger $i moves: ${moves.length}');
-    }
-    
-    debugPrint('========================');
-  }
-
   void startNewRound(int round, bool playerIsTiger) {
+    print('🔄 STARTING NEW ROUND: $round, playerIsTiger: $playerIsTiger');
     currentRound = round;
     goatsKilledThisRound = 0;
     gameOver = false;
@@ -360,11 +474,14 @@ class GameEngine {
     selectedGoat = null;
     totalGoatsPlaced = 0;
     goatsEaten = 0;
-    killedGoats.clear();
     isTigerKilling = false;
     
     _initializePositions();
-    tigerTurn = false;
+    
+    // Set turn based on player side
+    tigerTurn = playerIsTiger;
+    
+    print('🔄 New round initialized - tigerTurn: $tigerTurn');
     onBoardUpdate?.call();
   }
 
@@ -378,8 +495,8 @@ class GameEngine {
       Offset from = tigerPositions[i];
       List<Offset> moves = validTigerMoves(i);
       for (var to in moves) {
-        Offset mid = _middleGoat(from, to);
-        bool isKill = mid != Offset.zero && goatPositions.contains(mid);
+        Offset? killedGoat = _getKilledGoatPosition(from, to);
+        bool isKill = killedGoat != null && goatPositions.contains(killedGoat);
         
         allMoves.add({
           'tigerIndex': i,
@@ -398,6 +515,7 @@ class GameEngine {
     List<Map<String, dynamic>> allMoves = [];
     
     if (totalGoatsPlaced < maxGoats) {
+      // Placement phase
       for (var point in gridPoints) {
         if (!_isPositionOccupied(point)) {
           allMoves.add({
@@ -408,6 +526,7 @@ class GameEngine {
         }
       }
     } else {
+      // Movement phase
       for (int i = 0; i < goatPositions.length; i++) {
         Offset from = goatPositions[i];
         selectedGoat = from;
@@ -429,7 +548,9 @@ class GameEngine {
   }
 
   void executeBotMove(Map<String, dynamic> move) {
-    if (move['isValid'] != true || gameOver || _roundCompleted) return;
+    if (move['isValid'] != true || gameOver || _roundCompleted) {
+      return;
+    }
 
     switch (move['type']) {
       case 'tiger_move':
@@ -439,32 +560,16 @@ class GameEngine {
         
         List<Offset> validMoves = validTigerMoves(tigerIndex);
         if (!validMoves.contains(toPosition)) {
-          debugPrint('Invalid tiger move attempted by bot');
           return;
         }
         
-        Offset mid = _middleGoat(tigerPositions[tigerIndex], toPosition);
-        if (mid != Offset.zero && goatPositions.contains(mid)) {
-          int goatIdx = goatPositions.indexOf(mid);
-          onGoatKill?.call(goatIdx, tigerPositions[tigerIndex]);
-          goatPositions.removeAt(goatIdx);
-          goatsEaten++;
-          goatsKilledThisRound++;
-        }
-        
-        tigerPositions[tigerIndex] = toPosition;
-        selectedTigerIndex = null;
-        
-        onTigerMove?.call();
-        _checkRoundCompletion();
-        onBoardUpdate?.call();
+        _executeTigerMove(tigerIndex, toPosition);
         break;
 
       case 'goat_place':
         Offset toPosition = move['toPosition'];
         
         if (_isPositionOccupied(toPosition)) {
-          debugPrint('Invalid goat placement attempted by bot');
           return;
         }
         
@@ -484,7 +589,6 @@ class GameEngine {
         selectedGoat = null;
         
         if (!validMoves.contains(toPosition)) {
-          debugPrint('Invalid goat move attempted by bot');
           return;
         }
         
@@ -509,10 +613,17 @@ class GameEngine {
     _roundCompleted = false;
     winner = "";
     tigerTurn = false;
-    killedGoats.clear();
     isTigerKilling = false;
     
     _initializePositions();
     onBoardUpdate?.call();
+  }
+
+  bool shouldProceedToNextRound() {
+    return _roundCompleted && currentRound == 1;
+  }
+
+  bool isGameFinished() {
+    return _roundCompleted && currentRound == 2;
   }
 }
