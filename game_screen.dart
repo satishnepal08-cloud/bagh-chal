@@ -22,15 +22,14 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _GameScreenState extends State<GameScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late GameEngine engine;
   late BotService botService;
   double boardSize = 300;
   final GlobalKey _boardKey = GlobalKey();
 
   final AudioPlayer _audioPlayer = AudioPlayer();
-  bool isAudioPlaying = false;
-  bool isAnimating = false;
   bool isBotThinking = false;
 
   int _playerGoatsKilledAsTiger = 0;
@@ -43,6 +42,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   Timer? _moveTimer;
   Timer? _roundTimer;
   Timer? _botMoveDelayTimer;
+  Timer? _autoTransitionTimer;
   int _timeViolationCount = 0;
   int? _eliminatedGoatId;
   bool _showingEliminationWarning = false;
@@ -64,9 +64,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    
+
     currentPlayerSide = widget.playerSide;
-    
+
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1700),
@@ -77,20 +77,20 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           });
         }
       });
-    
+
     WidgetsBinding.instance.addObserver(this);
-    
+
     botService = BotService();
     _initializeEngine();
-    
+
     _addInitialGoats();
     _updateTigerPositions();
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _startMoveTimer();
         _startRoundTimer();
-        
+
         if (widget.isBotGame && _isBotTurn()) {
           _scheduleBotMove(delayMs: 500);
         }
@@ -100,9 +100,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
-    _cancelMoveTimer();
-    _cancelRoundTimer();
-    _cancelBotDelayTimer();
+    _cancelAllTimers();
     _audioPlayer.dispose();
     _animationController.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -111,79 +109,59 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   void _initializeEngine() {
     engine = GameEngine(boardSize: boardSize);
-    engine.onSelectToken = () {
-      if (mounted) _playSound('select.mp3');
+    engine.onSelectToken = () => _playSoundNonBlocking('select.mp3');
+
+    engine.onGoatMove = () {
+      _playSoundNonBlocking('goat_move.mp3');
+      _onMoveCompleted();
     };
     
-    engine.onGoatMove = _handleGoatMoveCompleted;
-    engine.onTigerMove = _handleTigerMoveCompleted;
-    engine.onGoatKill = _handleTigerKill;
+    engine.onTigerMove = () {
+      _playSoundNonBlocking('tiger_move.mp3');
+      if (!engine.isTigerKilling) {
+        _onMoveCompleted();
+      }
+    };
     
+    engine.onGoatKill = _handleTigerKill;
+
     engine.onRoundEnd = (round, goatsKilled) {
-      if (mounted && !_isHandlingRoundEnd) {
-        _isHandlingRoundEnd = true;
+      print('🎯 GameScreen: onRoundEnd callback triggered - round: $round, goatsKilled: $goatsKilled');
+      if (mounted) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
+          if (mounted && !_isHandlingRoundEnd) {
+            print('🎯 GameScreen: Executing _handleRoundEnd');
+            _isHandlingRoundEnd = true;
             _handleRoundEnd(round, goatsKilled);
+          } else {
+            print('❌ GameScreen: _handleRoundEnd blocked - _isHandlingRoundEnd: $_isHandlingRoundEnd');
           }
         });
       }
     };
-    
+
     engine.onBoardUpdate = () {
-      if (mounted) {
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     };
   }
 
   void _onMoveCompleted() {
-    if (!mounted) return;
-    
-    debugPrint('=== MOVE COMPLETED ===');
-    debugPrint('Game Over: ${engine.gameOver}');
-    debugPrint('Current Turn: ${engine.tigerTurn ? "Tiger" : "Goat"}');
-    
-    if (engine.gameOver) {
-      debugPrint('Game over detected - waiting for round end handler');
-      _cancelMoveTimer();
-      _cancelRoundTimer();
-      _cancelBotDelayTimer();
+    if (!mounted || engine.gameOver || engine.roundCompleted) {
+      _cancelAllTimers();
       return;
     }
 
     setState(() {
       engine.tigerTurn = !engine.tigerTurn;
-      debugPrint('Turn switched to: ${engine.tigerTurn ? "Tiger" : "Goat"}');
     });
 
     _resetMoveTimer();
 
     if (widget.isBotGame && _isBotTurn()) {
-      debugPrint('Scheduling bot move');
       _scheduleBotMove(delayMs: 800);
     } else {
       _cancelBotDelayTimer();
-      debugPrint("Player's turn started");
     }
-  }
-
-  void _handleGoatMoveCompleted() {
-    debugPrint('Goat move completed');
-    _smoothMoveSound('goat_move.mp3').then((_) {
-      if (mounted) {
-        _onMoveCompleted();
-      }
-    });
-  }
-
-  void _handleTigerMoveCompleted() {
-    debugPrint('Tiger move completed');
-    _smoothMoveSound('tiger_move.mp3').then((_) {
-      if (mounted) {
-        _onMoveCompleted();
-      }
-    });
   }
 
   void _addInitialGoats() {
@@ -205,7 +183,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   void _updateAnimatedPositions() {
     final double t = _animationController.value;
-    
+
     for (final entry in _targetTigerPositions.entries) {
       final idx = entry.key;
       final target = entry.value;
@@ -217,7 +195,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         );
       }
     }
-    
+
     for (final entry in _goatTargetPositions.entries) {
       final id = entry.key;
       final target = entry.value;
@@ -235,17 +213,13 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     for (int i = 0; i < engine.tigerPositions.length; i++) {
       _targetTigerPositions[i] = engine.tigerPositions[i];
     }
-    
     _animationController.forward(from: 0.0);
   }
 
-  Future<void> _handleTigerKill(int goatIndex, Offset tigerPos) async {
-    if (isAudioPlaying || isAnimating || goatIndex < 0 || goatIndex >= engine.goatPositions.length) {
-      return;
-    }
+  void _handleTigerKill(int goatIndex, Offset tigerPos) {
+    if (goatIndex < 0 || goatIndex >= engine.goatPositions.length) return;
 
     final Offset killedGoatPosition = engine.goatPositions[goatIndex];
-    
     int? killedGoatId;
     for (final entry in _goatPositionsById.entries) {
       if ((entry.value - killedGoatPosition).distance < 1) {
@@ -253,62 +227,66 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         break;
       }
     }
-    
-    if (killedGoatId == null) {
-      debugPrint('ERROR: Could not find goat at position $killedGoatPosition');
-      return;
-    }
+    if (killedGoatId == null) return;
 
     final safeKilledGoatId = killedGoatId;
 
-    debugPrint('Tiger killing goat ID:$safeKilledGoatId at position $killedGoatPosition');
-
     if (currentPlayerSide == 'tiger') {
-      _playerGoatsKilledAsTiger++;
-      debugPrint('Player killed goat. Total: $_playerGoatsKilledAsTiger');
+      _playerGoatsKilledAsTiger = engine.goatsKilledThisRound;
     } else {
-      _botGoatsKilledAsTiger++;
-      debugPrint('Bot killed goat. Total: $_botGoatsKilledAsTiger');
+      _botGoatsKilledAsTiger = engine.goatsKilledThisRound;
     }
 
-    if (mounted) {
-      setState(() => isAnimating = true);
-      await _playSound('tiger_kill.mp3');
-    }
+    _cancelMoveTimer();
 
-    if (mounted) {
-      setState(() {
-        _killedGoatIds.add(safeKilledGoatId);
-        engine.isTigerKilling = true;
-      });
-    }
+    final bool roundWasCompletedBeforeKill = engine.roundCompleted;
+    print('🎯 Before kill animation - roundWasCompletedBeforeKill: $roundWasCompletedBeforeKill');
 
-    await Future.delayed(const Duration(seconds: 2));
+    setState(() {
+      _killedGoatIds.add(safeKilledGoatId);
+      engine.isTigerKilling = true;
+    });
 
-    if (mounted) {
-      setState(() {
-        _goatPositionsById.remove(safeKilledGoatId);
-        _goatTargetPositions.remove(safeKilledGoatId);
-        _killedGoatIds.remove(safeKilledGoatId);
-        
-        engine.selectedTigerIndex = null;
-        engine.isTigerKilling = false;
-        isAnimating = false;
-      });
-    }
+    _playSoundNonBlocking('tiger_kill.mp3');
+
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (mounted) {
+        setState(() {
+          _goatPositionsById.remove(safeKilledGoatId);
+          _goatTargetPositions.remove(safeKilledGoatId);
+          _killedGoatIds.remove(safeKilledGoatId);
+          engine.selectedTigerIndex = null;
+          engine.isTigerKilling = false;
+        });
+      
+        final bool roundCompletedNow = engine.roundCompleted;
+        print('🎯 After kill animation - roundWasCompletedBeforeKill: $roundWasCompletedBeforeKill, roundCompletedNow: $roundCompletedNow');
+      
+        if (roundCompletedNow && !roundWasCompletedBeforeKill) {
+          print('🎯 Round completed DURING kill animation - dialog should appear via onRoundEnd callback');
+        } else if (!engine.gameOver && !roundCompletedNow) {
+          print('🎯 Round not completed - calling _onMoveCompleted()');
+          _onMoveCompleted();
+        } else {
+          print('🎯 Game over or round already completed - no further action needed');
+        }
+      }
+    });
   }
 
   void _onBoardTap(TapUpDetails details) {
-    if (!mounted || isAudioPlaying || isAnimating || engine.isTigerKilling || isBotThinking || _showingEliminationWarning) {
-      debugPrint('Board tap blocked');
+    if (!mounted ||
+        isBotThinking ||
+        engine.isTigerKilling ||
+        _showingEliminationWarning ||
+        engine.gameOver ||
+        _isHandlingRoundEnd) {
       return;
     }
-    if (widget.isBotGame && _isBotTurn()) {
-      debugPrint("Not player's turn");
-      return;
-    }
+    if (widget.isBotGame && _isBotTurn()) return;
 
-    final RenderBox? box = _boardKey.currentContext?.findRenderObject() as RenderBox?;
+    final RenderBox? box =
+        _boardKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
 
     final local = box.globalToLocal(details.globalPosition);
@@ -317,43 +295,43 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     final previousGoatPositions = List<Offset>.from(engine.goatPositions);
     final previousGoatCount = engine.goatPositions.length;
     final previousTigerPositions = List<Offset>.from(engine.tigerPositions);
-    
-    debugPrint('Player tapped at: $tapped, Tiger turn: ${engine.tigerTurn}');
-    
+
+    engine.handleTap(tapped);
+
     setState(() {
-      engine.handleTap(tapped);
-      
       final goatCountChanged = engine.goatPositions.length != previousGoatCount;
-      final tigerMoved = !_listsEqual(previousTigerPositions, engine.tigerPositions);
-      final goatMoved = !_listsEqual(previousGoatPositions, engine.goatPositions) && !goatCountChanged;
-      
+      final tigerMoved =
+          !_listsEqual(previousTigerPositions, engine.tigerPositions);
+      final goatMoved = !_listsEqual(previousGoatPositions, engine.goatPositions) &&
+          !goatCountChanged;
+
       if (goatCountChanged && engine.goatPositions.length > previousGoatCount) {
         final newPos = engine.goatPositions.last;
         final newId = _nextGoatId++;
         _goatPositionsById[newId] = newPos;
         _goatTargetPositions[newId] = newPos;
-        debugPrint('Player placed goat ID:$newId at $newPos');
       } else if (goatMoved) {
         Offset? movedFromPos;
         for (final oldPos in previousGoatPositions) {
-          if (!engine.goatPositions.any((newPos) => (newPos - oldPos).distance < 1)) {
+          if (!engine.goatPositions
+              .any((newPos) => (newPos - oldPos).distance < 1)) {
             movedFromPos = oldPos;
             break;
           }
         }
-        
+
         Offset? movedToPos;
         for (final newPos in engine.goatPositions) {
-          if (!previousGoatPositions.any((oldPos) => (oldPos - newPos).distance < 1)) {
+          if (!previousGoatPositions
+              .any((oldPos) => (oldPos - newPos).distance < 1)) {
             movedToPos = newPos;
             break;
           }
         }
-        
+
         if (movedFromPos != null && movedToPos != null) {
           for (final entry in _goatPositionsById.entries) {
             if ((entry.value - movedFromPos).distance < 1) {
-              debugPrint('Goat ID:${entry.key} moved from $movedFromPos to $movedToPos');
               _goatTargetPositions[entry.key] = movedToPos;
               _startAnimation();
               break;
@@ -364,7 +342,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         _updateTigerPositions();
         _startAnimation();
       }
-      
+
       _timeViolationCount = 0;
     });
   }
@@ -378,25 +356,29 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _makeBotMove() async {
-    if (!mounted || isBotThinking || engine.gameOver || !_isBotTurn() || _showingEliminationWarning) {
-      debugPrint('Bot move blocked');
+    if (!mounted ||
+        isBotThinking ||
+        engine.gameOver ||
+        !_isBotTurn() ||
+        _showingEliminationWarning ||
+        engine.roundCompleted) {
       return;
     }
-    
+
     _cancelBotDelayTimer();
     setState(() => isBotThinking = true);
 
     try {
       await Future.delayed(const Duration(milliseconds: 1000));
-      
-      if (!mounted || engine.gameOver || !_isBotTurn()) {
+
+      if (!mounted || engine.gameOver || !_isBotTurn() || engine.roundCompleted) {
         if (mounted) setState(() => isBotThinking = false);
         return;
       }
-      
-      final botMove = await botService.getBotMove(engine);
-      
-      if (!mounted || engine.gameOver) {
+
+      final botMove = await botService.getBotMoveWithDelay(engine);
+
+      if (!mounted || engine.gameOver || engine.roundCompleted) {
         if (mounted) setState(() => isBotThinking = false);
         return;
       }
@@ -413,37 +395,39 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
         final previousGoatCount = engine.goatPositions.length;
         final previousGoatPositions = List<Offset>.from(engine.goatPositions);
-        
+
         engine.executeBotMove(botMove);
-        
+
         if (mounted) {
           setState(() {
             _botMovePreview = null;
             _botMoveType = null;
 
-            if (botMove['type'] == 'goat_place' && engine.goatPositions.length > previousGoatCount) {
+            if (botMove['type'] == 'goat_place' &&
+                engine.goatPositions.length > previousGoatCount) {
               final newPos = engine.goatPositions.last;
               final newId = _nextGoatId++;
               _goatPositionsById[newId] = newPos;
               _goatTargetPositions[newId] = newPos;
-              debugPrint('Bot placed goat ID:$newId at $newPos');
             } else if (botMove['type'] == 'goat_move') {
               Offset? movedFromPos;
               for (final oldPos in previousGoatPositions) {
-                if (!engine.goatPositions.any((newPos) => (newPos - oldPos).distance < 1)) {
+                if (!engine.goatPositions
+                    .any((newPos) => (newPos - oldPos).distance < 1)) {
                   movedFromPos = oldPos;
                   break;
                 }
               }
-              
+
               Offset? movedToPos;
               for (final newPos in engine.goatPositions) {
-                if (!previousGoatPositions.any((oldPos) => (oldPos - newPos).distance < 1)) {
+                if (!previousGoatPositions
+                    .any((oldPos) => (oldPos - newPos).distance < 1)) {
                   movedToPos = newPos;
                   break;
                 }
               }
-              
+
               if (movedFromPos != null && movedToPos != null) {
                 for (final entry in _goatPositionsById.entries) {
                   if ((entry.value - movedFromPos).distance < 1) {
@@ -460,16 +444,16 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           });
         }
       } else {
-        debugPrint('Bot returned invalid move, advancing turn');
-        if (mounted) _onMoveCompleted();
+        if (mounted && !engine.gameOver && !engine.roundCompleted) {
+          _onMoveCompleted();
+        }
       }
     } catch (e) {
-      debugPrint('Bot error: $e');
-      if (mounted) _onMoveCompleted();
-    } finally {
-      if (mounted) {
-        setState(() => isBotThinking = false);
+      if (mounted && !engine.gameOver && !engine.roundCompleted) {
+        _onMoveCompleted();
       }
+    } finally {
+      if (mounted) setState(() => isBotThinking = false);
     }
   }
 
@@ -479,13 +463,10 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   void _startMoveTimer() {
-    _cancelMoveTimer();
     _timeRemaining = engine.tigerTurn ? 60 : 20;
 
-    debugPrint('Starting move timer: ${_timeRemaining}s for ${engine.tigerTurn ? "tiger" : "goat"}');
-
     _moveTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
+      if (!mounted || engine.gameOver || engine.roundCompleted) {
         timer.cancel();
         return;
       }
@@ -499,25 +480,21 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   void _resetMoveTimer() {
     _cancelMoveTimer();
-    if (mounted) _startMoveTimer();
+    if (mounted && !engine.gameOver && !engine.roundCompleted) {
+      _startMoveTimer();
+    }
   }
 
   void _cancelMoveTimer() {
-    try {
-      if (_moveTimer?.isActive ?? false) {
-        _moveTimer!.cancel();
-      }
-    } catch (_) {}
+    _moveTimer?.cancel();
     _moveTimer = null;
   }
 
   void _startRoundTimer() {
-    _cancelRoundTimer();
     _roundTimeRemaining = 600;
-    debugPrint('Starting round timer ($_roundTimeRemaining seconds)');
 
     _roundTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) {
+      if (!mounted || engine.gameOver || engine.roundCompleted) {
         timer.cancel();
         return;
       }
@@ -530,35 +507,46 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   void _cancelRoundTimer() {
-    try {
-      if (_roundTimer?.isActive ?? false) {
-        _roundTimer!.cancel();
-      }
-    } catch (_) {}
+    _roundTimer?.cancel();
     _roundTimer = null;
   }
 
   void _scheduleBotMove({required int delayMs}) {
     _cancelBotDelayTimer();
     _botMoveDelayTimer = Timer(Duration(milliseconds: delayMs), () {
-      if (mounted && _isBotTurn() && !engine.gameOver && !isBotThinking) {
+      if (mounted &&
+          _isBotTurn() &&
+          !engine.gameOver &&
+          !isBotThinking &&
+          !engine.roundCompleted) {
         _makeBotMove();
       }
     });
   }
 
   void _cancelBotDelayTimer() {
-    try {
-      if (_botMoveDelayTimer?.isActive ?? false) {
-        _botMoveDelayTimer!.cancel();
-      }
-    } catch (_) {}
+    _botMoveDelayTimer?.cancel();
     _botMoveDelayTimer = null;
   }
 
+  void _cancelAutoTransitionTimer() {
+    _autoTransitionTimer?.cancel();
+    _autoTransitionTimer = null;
+  }
+
+  void _cancelAllTimers() {
+    _cancelMoveTimer();
+    _cancelRoundTimer();
+    _cancelBotDelayTimer();
+    _cancelAutoTransitionTimer();
+  }
+
   void _handleMoveTimeOut() {
-    if (!mounted || engine.gameOver || _showingEliminationWarning) return;
-    
+    if (!mounted ||
+        engine.gameOver ||
+        _showingEliminationWarning ||
+        engine.roundCompleted) return;
+
     setState(() => _showingEliminationWarning = true);
     _showTimeViolationDialog();
   }
@@ -575,7 +563,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   void _handlePlayerTimeViolation() {
     _timeViolationCount++;
-    
+
     if (_timeViolationCount >= 2) {
       _handleGameOverDueToTimeViolation();
     } else {
@@ -587,7 +575,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     if (!mounted) return;
 
     String playerRole = currentPlayerSide == 'tiger' ? 'Tiger' : 'Goat';
-    
+
     if (currentPlayerSide == 'tiger' && engine.tigerPositions.isNotEmpty) {
       int eliminatedIndex = 0;
       _eliminateTiger(eliminatedIndex, playerRole);
@@ -597,10 +585,15 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _handleGameOverDueToTimeViolation();
       return;
     }
-    
+
     _showEliminationNotification(playerRole);
-    
-    _onMoveCompleted();
+
+    if (!engine.gameOver && !engine.roundCompleted) {
+      _onMoveCompleted();
+    } else {
+      _cancelAllTimers();
+    }
+
     setState(() => _showingEliminationWarning = false);
   }
 
@@ -610,7 +603,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         engine.tigerPositions.removeAt(index);
         _updateTigerPositions();
       });
-      
+
       if (engine.tigerPositions.length < 2) {
         _handleGameOverDueToTimeViolation();
       }
@@ -625,21 +618,21 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
     Offset goatToRemove = engine.goatPositions.first;
     int? goatIdToRemove;
-    
+
     for (final entry in _goatPositionsById.entries) {
       if ((entry.value - goatToRemove).distance < 1) {
         goatIdToRemove = entry.key;
         break;
       }
     }
-    
+
     if (goatIdToRemove != null) {
       final safeGoatId = goatIdToRemove;
       setState(() {
         _eliminatedGoatId = safeGoatId;
         _killedGoatIds.add(safeGoatId);
       });
-      
+
       Future.delayed(const Duration(milliseconds: 1000), () {
         if (mounted) {
           setState(() {
@@ -649,20 +642,12 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             _killedGoatIds.remove(safeGoatId);
             _eliminatedGoatId = null;
           });
-          
-          if (engine.goatPositions.length < 5) {
-            _handleGameOverDueToTimeViolation();
-          }
         }
       });
     } else {
       setState(() {
         engine.goatPositions.remove(goatToRemove);
       });
-      
-      if (engine.goatPositions.length < 5) {
-        _handleGameOverDueToTimeViolation();
-      }
     }
   }
 
@@ -677,8 +662,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                '⏰ Time Violation! One $playerRole eliminated',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                'Time Violation! One $playerRole eliminated',
+                style:
+                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
               ),
             ),
           ],
@@ -693,21 +679,20 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   void _handleGameOverDueToTimeViolation() {
     if (!mounted) return;
 
-    _cancelMoveTimer();
-    _cancelRoundTimer();
-    _cancelBotDelayTimer();
-    
+    _cancelAllTimers();
+
     String winner;
     String reason;
-    
+
     if (widget.isBotGame) {
-      winner = '🤖 Bot Wins!';
+      winner = 'Bot Wins!';
       reason = 'Player exceeded time limit multiple times';
     } else {
-      winner = engine.tigerTurn ? '🐐 Goat Wins!' : '🐅 Tiger Wins!';
-      reason = '${engine.tigerTurn ? 'Tiger' : 'Goat'} player exceeded time limit multiple times';
+      winner = engine.tigerTurn ? 'Goat Wins!' : 'Tiger Wins!';
+      reason =
+          '${engine.tigerTurn ? 'Tiger' : 'Goat'} player exceeded time limit multiple times';
     }
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -716,7 +701,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           children: [
             Icon(Icons.timer_off, color: Colors.red, size: 20),
             SizedBox(width: 8),
-            Text("Game Over - Time Violation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            Text("Game Over - Time Violation",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           ],
         ),
         content: Column(
@@ -724,7 +710,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           children: [
             const Icon(Icons.emoji_events, size: 40, color: Colors.amber),
             const SizedBox(height: 12),
-            Text(winner, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(winner,
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.all(10),
@@ -734,12 +722,15 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
               ),
               child: Column(
                 children: [
-                  const Text('Reason:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  const Text('Reason:',
+                      style:
+                          TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
-                  Text(reason, style: const TextStyle(fontSize: 11, color: Colors.red)),
+                  Text(reason,
+                      style: const TextStyle(fontSize: 11, color: Colors.red)),
                   const SizedBox(height: 6),
-                  Text('Consecutive violations: $_timeViolationCount', 
-                       style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                  Text('Consecutive violations: $_timeViolationCount',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
                 ],
               ),
             ),
@@ -747,19 +738,17 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         ),
         actions: [
           TextButton(
-            onPressed: () { 
-              Navigator.pop(context); 
-              Navigator.pop(context); 
-            }, 
-            child: const Text("Home", style: TextStyle(fontSize: 12))
-          ),
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.pop(context);
+              },
+              child: const Text("Home", style: TextStyle(fontSize: 12))),
           ElevatedButton(
-            onPressed: () { 
-              Navigator.pop(context); 
-              _restartGame(); 
-            }, 
-            child: const Text("Play Again", style: TextStyle(fontSize: 12))
-          ),
+              onPressed: () {
+                Navigator.pop(context);
+                _restartGame();
+              },
+              child: const Text("Play Again", style: TextStyle(fontSize: 12))),
         ],
       ),
     );
@@ -767,59 +756,66 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   void _handleRoundTimeOut() {
     if (!mounted) return;
-    _cancelMoveTimer();
+    _cancelAllTimers();
     _handleRoundEnd(currentRound, engine.goatsKilledThisRound);
   }
 
   void _handleRoundEnd(int round, int goatsKilled) {
-    if (!mounted || _isHandlingRoundEnd) return;
+    print('🎯 _handleRoundEnd executing - round: $round, goatsKilled: $goatsKilled');
     
-    _isHandlingRoundEnd = true;
-    _cancelMoveTimer();
-    _cancelRoundTimer();
-    _cancelBotDelayTimer();
+    if (!mounted) {
+      print('❌ _handleRoundEnd: Not mounted, returning');
+      return;
+    }
 
-    debugPrint('Handling round end: Round $round, Goats killed: $goatsKilled');
+    _cancelAllTimers();
 
     if (round == 1) {
-      // Store the goats killed in round 1
       if (currentPlayerSide == 'tiger') {
         _playerGoatsKilledAsTiger = goatsKilled;
       } else {
         _botGoatsKilledAsTiger = goatsKilled;
       }
 
+      print('🎯 Showing Round 1 completion dialog');
       showDialog(
         context: context,
         barrierDismissible: false,
         builder: (_) => AlertDialog(
-          title: const Text("Round 1 Complete!", style: TextStyle(fontSize: 16)),
+          title: const Text("Round 1 Complete!",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.sports_score, size: 40, color: Colors.blue),
               const SizedBox(height: 12),
-              Text('${engine.winner}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+              Text('${engine.winner}',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              Text('Goats killed: $goatsKilled', style: const TextStyle(fontSize: 12)),
+              Text(
+                  'Goats killed by ${currentPlayerSide == 'tiger' ? 'You' : 'Bot'}: $goatsKilled',
+                  style: const TextStyle(fontSize: 12)),
               const SizedBox(height: 8),
-              const Text('Switching sides for Round 2...', style: TextStyle(fontSize: 11, color: Colors.grey)),
+              Text(
+                  'In Round 2, you will play as: ${currentPlayerSide == 'tiger' ? 'Goat' : 'Tiger'}',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('Starting round 2 in 3 seconds...',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
             ],
           ),
-          actions: [
-            ElevatedButton(
-              onPressed: () { 
-                Navigator.pop(context); 
-                _startRound2(); 
-              }, 
-              child: const Text("Start Round 2", style: TextStyle(fontSize: 12))
-            ),
-          ],
         ),
       );
+
+      _autoTransitionTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+          _isHandlingRoundEnd = false;
+          _startRound2();
+        }
+      });
     } else {
-      // Round 2 completed - show final results
-      if (currentPlayerSide == 'goat') {
+      if (currentPlayerSide == 'tiger') {
         _playerGoatsKilledAsTiger = goatsKilled;
       } else {
         _botGoatsKilledAsTiger = goatsKilled;
@@ -829,97 +825,127 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   void _showFinalResults() {
-    if (!mounted) return;
+  _isHandlingRoundEnd = false; // ✅ CRITICAL MISSING LINE ADDED HERE
+  if (!mounted) return;
 
-    String winner;
-    if (_playerGoatsKilledAsTiger > _botGoatsKilledAsTiger) {
-      winner = '🎉 You Win!';
-    } else if (_botGoatsKilledAsTiger > _playerGoatsKilledAsTiger) {
-      winner = '🤖 Bot Wins!';
-    } else {
-      winner = '🤝 Draw!';
-    }
+  String winner;
+  String winnerDescription;
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text("Game Complete!", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              winner.contains('You Win') ? Icons.emoji_events : 
-              winner.contains('Bot Wins') ? Icons.computer : Icons.handshake,
-              size: 40,
-              color: winner.contains('Win') ? Colors.amber : Colors.blue,
-            ),
-            const SizedBox(height: 12),
-            Text(winner, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.grey[200],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  const Text('Final Score', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      Column(
-                        children: [
-                          const Text('You', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                          Text('$_playerGoatsKilledAsTiger', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      Column(
-                        children: [
-                          const Text('Bot', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                          Text('$_botGoatsKilledAsTiger', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () { Navigator.pop(context); Navigator.pop(context); }, 
-            child: const Text("Home", style: TextStyle(fontSize: 12))
+  if (_playerGoatsKilledAsTiger > _botGoatsKilledAsTiger) {
+    winner = 'You Win! 🎉';
+    winnerDescription = 'You killed more goats as tiger';
+  } else if (_botGoatsKilledAsTiger > _playerGoatsKilledAsTiger) {
+    winner = 'Bot Wins! 🤖';
+    winnerDescription = 'Bot killed more goats as tiger';
+  } else {
+    winner = 'Draw! 🤝';
+    winnerDescription = 'Both killed equal goats as tiger';
+  }
+
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => AlertDialog(
+      title: const Text("Game Complete!",
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            winner.contains('You Win')
+                ? Icons.emoji_events
+                : winner.contains('Bot Wins')
+                    ? Icons.computer
+                    : Icons.handshake,
+            size: 50,
+            color: winner.contains('Win') ? Colors.amber : Colors.blue,
           ),
-          ElevatedButton(
-            onPressed: () { Navigator.pop(context); _restartGame(); }, 
-            child: const Text("Play Again", style: TextStyle(fontSize: 12))
+          const SizedBox(height: 16),
+          Text(winner,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(winnerDescription,
+              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              children: [
+                const Text('Final Score (Goats Killed as Tiger)',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    Column(
+                      children: [
+                        const Text('You',
+                            style: TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.bold)),
+                        Text('$_playerGoatsKilledAsTiger',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                    Column(
+                      children: [
+                        const Text('Bot',
+                            style: TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.bold)),
+                        Text('$_botGoatsKilledAsTiger',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ],
       ),
-    );
-  }
+      actions: [
+        TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            child: const Text("Home", style: TextStyle(fontSize: 14))),
+        ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _restartGame();
+            },
+            child: const Text("Play Again", style: TextStyle(fontSize: 14))),
+      ],
+    ),
+  );
+}
 
   void _startRound2() {
     if (!mounted) return;
 
-    _cancelMoveTimer();
-    _cancelRoundTimer();
-    _cancelBotDelayTimer();
+    _cancelAllTimers();
+
+    String newPlayerSide = currentPlayerSide == 'tiger' ? 'goat' : 'tiger';
+    
+    print('🔄 Starting Round 2 - Switching roles:');
+    print('🔄 Previous role: $currentPlayerSide');
+    print('🔄 New role: $newPlayerSide');
 
     setState(() {
       currentRound = 2;
-      currentPlayerSide = currentPlayerSide == 'tiger' ? 'goat' : 'tiger';
+      currentPlayerSide = newPlayerSide;
       _timeViolationCount = 0;
       _showingEliminationWarning = false;
       _isHandlingRoundEnd = false;
-      
-      // Start new round with switched sides
+
       engine.startNewRound(2, currentPlayerSide == 'tiger');
-      
+
       _nextGoatId = 0;
       _goatPositionsById.clear();
       _goatTargetPositions.clear();
@@ -927,12 +953,12 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _addInitialGoats();
       _updateTigerPositions();
     });
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _startMoveTimer();
         _startRoundTimer();
-        
+
         if (widget.isBotGame && _isBotTurn() && !engine.gameOver) {
           _scheduleBotMove(delayMs: 500);
         }
@@ -943,9 +969,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   void _restartGame() {
     if (!mounted) return;
 
-    _cancelMoveTimer();
-    _cancelRoundTimer();
-    _cancelBotDelayTimer();
+    _cancelAllTimers();
 
     setState(() {
       currentRound = 1;
@@ -955,9 +979,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _timeViolationCount = 0;
       _showingEliminationWarning = false;
       _isHandlingRoundEnd = false;
-      
+
       engine.reset();
-      
+
       _nextGoatId = 0;
       _goatPositionsById.clear();
       _goatTargetPositions.clear();
@@ -965,12 +989,12 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       _addInitialGoats();
       _updateTigerPositions();
     });
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _startMoveTimer();
         _startRoundTimer();
-        
+
         if (widget.isBotGame && _isBotTurn() && !engine.gameOver) {
           _scheduleBotMove(delayMs: 500);
         }
@@ -978,36 +1002,10 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     });
   }
 
-  Future<void> _playSound(String fileName) async {
-    if (isAudioPlaying || !mounted) return;
-    try {
-      setState(() => isAudioPlaying = true);
-      await _audioPlayer.setSource(AssetSource('audio/$fileName'));
-      await _audioPlayer.resume();
-      _audioPlayer.onPlayerComplete.listen((event) {
-        if (mounted) setState(() => isAudioPlaying = false);
-      });
-    } catch (e) {
-      debugPrint('Error playing $fileName: $e');
-      if (mounted) setState(() => isAudioPlaying = false);
-    }
-  }
-
-  Future<void> _smoothMoveSound(String fileName) async {
-    if (!mounted) return;
-    setState(() => isAnimating = true);
-    await _playSound(fileName);
-    await Future.delayed(const Duration(milliseconds: 1800));
-    if (mounted) setState(() => isAnimating = false);
-  }
-
-  String _getCurrentTurnText() {
-    if (!widget.isBotGame) return engine.tigerTurn ? '🐅 Tiger' : '🐐 Goat';
-    if (currentPlayerSide == 'tiger') {
-      return engine.tigerTurn ? '🐅 Your turn' : '🐐 Bot turn';
-    } else {
-      return engine.tigerTurn ? '🐅 Bot turn' : '🐐 Your turn';
-    }
+  void _playSoundNonBlocking(String fileName) {
+    _audioPlayer
+        .setSource(AssetSource('audio/$fileName'))
+        .then((_) => _audioPlayer.resume());
   }
 
   String _formatTime(int seconds) {
@@ -1022,8 +1020,121 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     return Colors.white;
   }
 
+  Widget _buildPlayerProfile({
+    required String role,
+    required bool isBot,
+    required bool isActive,
+  }) {
+    final int goatsKilled = isBot ? _botGoatsKilledAsTiger : _playerGoatsKilledAsTiger;
+    final String displayRole = role == 'tiger' ? 'Tiger' : 'Goat';
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: isActive ? Colors.brown.shade800 : Colors.brown.shade700.withOpacity(0.7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isActive ? Colors.amber : Colors.transparent,
+          width: isActive ? 1.5 : 0.5,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: Colors.amber,
+            child: Text(
+              isBot ? 'Bot' : 'You',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isBot ? 'Bot' : 'You',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    displayRole,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.8),
+                      fontSize: 10,
+                    ),
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    '$goatsKilled',
+                    style: TextStyle(
+                      color: Colors.amber.shade200,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          if (isActive) ...[
+            const SizedBox(width: 4),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _getTimerColor().withOpacity(0.2),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: _getTimerColor(), width: 1),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.timer, color: _getTimerColor(), size: 12),
+                  const SizedBox(width: 2),
+                  Text(
+                    '$_timeRemaining',
+                    style: TextStyle(
+                      color: _getTimerColor(),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final bool isBotActive = widget.isBotGame && _isBotTurn();
+    final bool isPlayerActive = !widget.isBotGame || !_isBotTurn();
+
+    String botRole = '';
+    String playerRole = '';
+
+    if (widget.isBotGame) {
+      if (currentPlayerSide == 'tiger') {
+        playerRole = 'tiger';
+        botRole = 'goat';
+      } else {
+        playerRole = 'goat';
+        botRole = 'tiger';
+      }
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Round $currentRound', style: const TextStyle(fontSize: 16)),
@@ -1039,178 +1150,254 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             colors: [Colors.green.shade700, Colors.green.shade900],
           ),
         ),
-        child: Center(
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const SizedBox(height: 10),
-                
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  decoration: BoxDecoration(color: Colors.black.withOpacity(0.4), borderRadius: BorderRadius.circular(12)),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.access_time, color: Colors.amber, size: 14),
-                      const SizedBox(width: 4),
-                      Text(_formatTime(_roundTimeRemaining), 
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, 
-                          color: _roundTimeRemaining <= 60 ? Colors.red : Colors.white)),
-                    ],
-                  ),
-                ),
-                
-                const SizedBox(height: 10),
-                
-                Container(
-                  width: boardSize + 40,
-                  height: boardSize + 40,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.brown.shade700,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))],
-                  ),
-                  child: GestureDetector(
-                    onTapUp: _onBoardTap,
-                    child: Container(
-                      key: _boardKey,
-                      width: boardSize,
-                      height: boardSize,
-                      decoration: BoxDecoration(color: Colors.brown.shade300, borderRadius: BorderRadius.circular(10)),
-                      child: Stack(
-                        children: [
-                          const BoardWidget(),
-                          
-                          if (_botMovePreview != null)
-                            Positioned(
-                              left: _botMovePreview!.dx - 20,
-                              top: _botMovePreview!.dy - 20,
-                              width: 40,
-                              height: 40,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.yellow.withOpacity(0.3),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: Colors.yellow, width: 3),
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    _botMoveType == 'goat_place' ? '🐐' : '🐅',
-                                    style: const TextStyle(fontSize: 16),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          
-                          if (engine.selectedTigerIndex != null)
-                            ...engine.validTigerMoves(engine.selectedTigerIndex!).map((pos) => 
-                              Positioned(left: pos.dx - 12, top: pos.dy - 12, child: ValidMoveIndicator(position: pos))),
-                          if (engine.selectedGoat != null)
-                            ...engine.validGoatMoves().map((pos) => 
-                              Positioned(left: pos.dx - 12, top: pos.dy - 12, child: ValidMoveIndicator(position: pos))),
-                          ..._currentTigerPositions.entries.map((e) => 
-                            Positioned(
-                              left: e.value.dx - 15, top: e.value.dy - 15, width: 30, height: 30,
-                              child: TigerToken(position: e.value, highlight: engine.selectedTigerIndex == e.key, 
-                                isKillingMove: engine.isTigerKilling && engine.selectedTigerIndex == e.key))),
-                          ..._goatPositionsById.entries.map((e) {
-                            final id = e.key;
-                            final pos = e.value;
-                            final bool isDead = _killedGoatIds.contains(id) || _eliminatedGoatId == id;
-                            return Positioned(
-                              left: pos.dx - 15, top: pos.dy - 15, width: 30, height: 30,
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 800),
-                                opacity: isDead ? 0.0 : 1.0,
-                                child: GoatToken(position: pos, isDead: isDead),
-                              ),
-                            );
-                          }),
-                          
-                          if (isBotThinking)
-                            Container(
-                              color: Colors.black.withOpacity(0.3),
-                              child: const Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    CircularProgressIndicator(color: Colors.white),
-                                    SizedBox(height: 8),
-                                    Text('Bot thinking...', style: TextStyle(color: Colors.white, fontSize: 12)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  margin: const EdgeInsets.symmetric(horizontal: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.brown.shade800,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 3))],
-                  ),
+        child: Column(
+          children: [
+            if (widget.isBotGame)
+              _buildPlayerProfile(
+                role: botRole,
+                isBot: true,
+                isActive: isBotActive,
+              ),
+
+            Expanded(
+              child: Center(
+                child: SingleChildScrollView(
                   child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(_getCurrentTurnText(), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.amber)),
-                      const SizedBox(height: 4),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.timer, color: _getTimerColor(), size: 14),
-                          const SizedBox(width: 4),
-                          Text('$_timeRemaining', style: TextStyle(
-                            fontSize: 14, 
-                            fontWeight: FontWeight.bold, 
-                            color: _getTimerColor()
-                          )),
-                          const SizedBox(width: 2),
-                          Text('sec', style: TextStyle(
-                            color: _getTimerColor().withOpacity(0.7), 
-                            fontSize: 10
-                          )),
-                          if (_timeViolationCount > 0) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: Colors.red,
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                '$_timeViolationCount',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 8,
-                                  fontWeight: FontWeight.bold
-                                ),
+                      const SizedBox(height: 10),
+
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.4),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.access_time, color: Colors.amber, size: 14),
+                            const SizedBox(width: 4),
+                            Text(
+                              _formatTime(_roundTimeRemaining),
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: _roundTimeRemaining <= 60 ? Colors.red : Colors.white,
                               ),
                             ),
                           ],
-                        ],
+                        ),
                       ),
-                      const SizedBox(height: 4),
-                      Text('Placed: ${engine.totalGoatsPlaced}/${GameEngine.maxGoats} | Eaten: ${engine.goatsEaten}', 
-                        style: const TextStyle(fontSize: 10, color: Colors.white)),
-                      if (engine.tigerTurn) 
-                        const Text('Tiger Time: 60 sec', style: TextStyle(fontSize: 8, color: Colors.white70)),
-                      if (!engine.tigerTurn)
-                        const Text('Goat Time: 20 sec', style: TextStyle(fontSize: 8, color: Colors.white70)),
+
+                      const SizedBox(height: 10),
+
+                      Container(
+                        width: boardSize + 40,
+                        height: boardSize + 40,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.brown.shade700,
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 10,
+                              offset: const Offset(0, 5),
+                            )
+                          ],
+                        ),
+                        child: GestureDetector(
+                          onTapUp: _onBoardTap,
+                          child: Container(
+                            key: _boardKey,
+                            width: boardSize,
+                            height: boardSize,
+                            decoration: BoxDecoration(
+                              color: Colors.brown.shade300,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Stack(
+                              children: [
+                                const BoardWidget(),
+
+                                if (_botMovePreview != null)
+                                  Positioned(
+                                    left: _botMovePreview!.dx - 20,
+                                    top: _botMovePreview!.dy - 20,
+                                    width: 40,
+                                    height: 40,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.yellow.withOpacity(0.3),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(color: Colors.yellow, width: 3),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          _botMoveType == 'goat_place' ? 'Goat' : 'Tiger',
+                                          style: const TextStyle(fontSize: 16),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                if (engine.selectedTigerIndex != null)
+                                  ...engine.validTigerMoves(engine.selectedTigerIndex!).map((pos) =>
+                                      Positioned(
+                                        left: pos.dx - 12,
+                                        top: pos.dy - 12,
+                                        child: ValidMoveIndicator(position: pos),
+                                      )),
+                                if (engine.selectedGoat != null)
+                                  ...engine.validGoatMoves().map((pos) =>
+                                      Positioned(
+                                        left: pos.dx - 12,
+                                        top: pos.dy - 12,
+                                        child: ValidMoveIndicator(position: pos),
+                                      )),
+
+                                ..._currentTigerPositions.entries.map((e) =>
+                                    Positioned(
+                                      left: e.value.dx - 15,
+                                      top: e.value.dy - 15,
+                                      width: 30,
+                                      height: 30,
+                                      child: TigerToken(
+                                        position: e.value,
+                                        highlight: engine.selectedTigerIndex == e.key,
+                                        isKillingMove: engine.isTigerKilling && engine.selectedTigerIndex == e.key,
+                                      ),
+                                    )),
+
+                                ..._goatPositionsById.entries.map((e) {
+                                  final id = e.key;
+                                  final pos = e.value;
+                                  final bool isDead = _killedGoatIds.contains(id) || _eliminatedGoatId == id;
+                                  return Positioned(
+                                    left: pos.dx - 15,
+                                    top: pos.dy - 15,
+                                    width: 30,
+                                    height: 30,
+                                    child: AnimatedOpacity(
+                                      duration: const Duration(milliseconds: 800),
+                                      opacity: isDead ? 0.0 : 1.0,
+                                      child: GoatToken(position: pos, isDead: isDead),
+                                    ),
+                                  );
+                                }),
+
+                                if (isBotThinking)
+                                  Container(
+                                    color: Colors.black.withOpacity(0.3),
+                                    child: const Center(
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          CircularProgressIndicator(color: Colors.white),
+                                          SizedBox(height: 8),
+                                          Text(
+                                            'Bot thinking...',
+                                            style: TextStyle(color: Colors.white, fontSize: 12),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        margin: const EdgeInsets.symmetric(horizontal: 20),
+                        decoration: BoxDecoration(
+                          color: Colors.brown.shade800,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 3),
+                            )
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            Column(
+                              children: [
+                                const Text('Placed',
+                                    style: TextStyle(fontSize: 9, color: Colors.white70)),
+                                Text(
+                                  '${engine.totalGoatsPlaced}/${GameEngine.maxGoats}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.amber,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Container(width: 1, height: 30, color: Colors.white30),
+                            Column(
+                              children: [
+                                const Text('Eaten',
+                                    style: TextStyle(fontSize: 9, color: Colors.white70)),
+                                Text(
+                                  '${engine.goatsEaten}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.redAccent,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_timeViolationCount > 0) ...[
+                              Container(width: 1, height: 30, color: Colors.white30),
+                              Column(
+                                children: [
+                                  const Text('Warnings',
+                                      style: TextStyle(fontSize: 9, color: Colors.white70)),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      '$_timeViolationCount',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
                     ],
                   ),
                 ),
-                const SizedBox(height: 10),
-              ],
+              ),
             ),
-          ),
+
+            if (widget.isBotGame)
+              _buildPlayerProfile(
+                role: playerRole,
+                isBot: false,
+                isActive: isPlayerActive,
+              ),
+          ],
         ),
       ),
     );
