@@ -1,121 +1,731 @@
 import 'package:flutter/material.dart';
-import 'game_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'matchmaking_screen.dart';
+import 'bot_selection_screen.dart';
+import 'store_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final User user;
+  
+  const HomeScreen({super.key, required this.user});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _goatAnimation;
+class _HomeScreenState extends State<HomeScreen> {
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  String? _equippedAvatarPath;
+  bool _showSidebar = false;
 
   @override
   void initState() {
     super.initState();
-    _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 2))
-          ..repeat(reverse: true);
+    _loadEquippedAvatar();
+  }
 
+  Future<void> _loadEquippedAvatar() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    final goatAvatars = {
+      'goat_1': 'assets/images/classic_goat.png',
+      'goat_2': 'assets/images/angry_goat.png',
+      'goat_3': 'assets/images/guot_goat.png',
+    };
+    
+    for (final entry in goatAvatars.entries) {
+      final isEquipped = prefs.getBool('equipped_${entry.key}') ?? (entry.key == 'goat_1');
+      if (isEquipped) {
+        setState(() {
+          _equippedAvatarPath = entry.value;
+        });
+        return;
+      }
+    }
+    
+    setState(() {
+      _equippedAvatarPath = 'assets/images/classic_goat.png';
+    });
+  }
 
-    _goatAnimation = Tween<double>(begin: 0, end: -10).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+  ImageProvider _getProfileImage() {
+    if (_equippedAvatarPath != null) {
+      return AssetImage(_equippedAvatarPath!);
+    } else if (widget.user.photoURL != null) {
+      return NetworkImage(widget.user.photoURL!);
+    } else {
+      return const AssetImage('assets/images/classic_goat.png');
+    }
+  }
+
+  bool _shouldShowPlaceholder() {
+    return _equippedAvatarPath == null && 
+           widget.user.photoURL == null;
+  }
+
+  Future<void> _signOut() async {
+    await _googleSignIn.signOut();
+    await FirebaseAuth.instance.signOut();
+  }
+
+  void _copyToClipboard(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: widget.user.uid));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('User ID copied!')),
     );
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Widget _animatedImage(String assetPath, Animation<double> animation) {
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, child) {
-        return Transform.translate(
-          offset: Offset(0, animation.value),
-          child: child,
-        );
-      },
-      child: Image.asset(
-        assetPath,
-        width: 120,
-        height: 120,
+  void _startOnlineMatchmaking(BuildContext context) {
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => const MatchmakingScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          const begin = Offset(1.0, 0.0);
+          const end = Offset.zero;
+          const curve = Curves.easeInOut;
+          
+          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+          var offsetAnimation = animation.drive(tween);
+          
+          return SlideTransition(
+            position: offsetAnimation,
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 400),
       ),
     );
   }
 
-  Widget _greenButton(String text, VoidCallback onPressed) {
-    return SizedBox(
-      width: 180,
-      height: 50,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.green[600],
-          foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-        onPressed: onPressed,
-        child: Text(
-          text,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
+  void _startBotGameSelection(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const BotSelectionScreen(),
       ),
     );
+  }
+
+  void _showStore(BuildContext context) {
+    // Close sidebar first
+    setState(() {
+      _showSidebar = false;
+    });
+    
+    // Navigate to store after sidebar animation completes
+    Future.delayed(const Duration(milliseconds: 300), () {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => StoreScreen(user: widget.user),
+        ),
+      ).then((_) {
+        _loadEquippedAvatar();
+      });
+    });
+  }
+
+  void _showPlayerVault() {
+    setState(() {
+      _showSidebar = false;
+    });
+    
+    Future.delayed(const Duration(milliseconds: 300), () {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Player Vault - Coming Soon!')),
+      );
+    });
+  }
+
+  void _showDeposit() {
+    setState(() {
+      _showSidebar = false;
+    });
+    
+    Future.delayed(const Duration(milliseconds: 300), () {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Deposit - Coming Soon!')),
+      );
+    });
+  }
+
+  void _showNameChangeDialog() {
+    setState(() {
+      _showSidebar = false;
+    });
+    
+    Future.delayed(const Duration(milliseconds: 300), () {
+      showDialog(
+        context: context,
+        builder: (context) => NameChangeDialog(
+          user: widget.user,
+          onNameUpdated: () {
+            setState(() {});
+          },
+        ),
+      );
+    });
+  }
+
+  void _toggleSidebar() {
+    setState(() {
+      _showSidebar = !_showSidebar;
+    });
+  }
+
+  void _closeSidebar() {
+    if (_showSidebar) {
+      setState(() {
+        _showSidebar = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Bagh Chal'),
+        backgroundColor: Colors.green.withOpacity(0.9),
+        foregroundColor: Colors.white,
+        leading: IconButton(
+          icon: const Icon(Icons.menu),
+          onPressed: _toggleSidebar,
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout, size: 20),
+            onPressed: _signOut,
+            tooltip: 'Logout',
+          ),
+        ],
+      ),
       body: Stack(
         children: [
-          // Background
+          // Full Screen Image Background
           Positioned.fill(
             child: Image.asset(
-              'assets/images/bg.jpg',
+              'assets/images/bg.jpeg',
               fit: BoxFit.cover,
             ),
           ),
-          // Center content
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Animated tiger and goat
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(width: 30),
-                    _animatedImage('assets/images/goat_face.png', _goatAnimation),
+
+          // Dark overlay to make content more readable
+          Positioned.fill(
+            child: Container(
+              color: Colors.black.withOpacity(0.3),
+            ),
+          ),
+
+          // Main Content - Game Buttons (Clean without white box)
+          Positioned.fill(
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Game Mode Buttons - Clean design
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Online Play Button
+                      Container(
+                        margin: const EdgeInsets.symmetric(vertical: 10),
+                        child: ElevatedButton.icon(
+                          onPressed: () => _startOnlineMatchmaking(context),
+                          icon: const Icon(Icons.online_prediction, size: 24),
+                          label: const Text(
+                            'Play Online',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.withOpacity(0.9),
+                            foregroundColor: Colors.white,
+                            elevation: 8,
+                            shadowColor: Colors.blue.withOpacity(0.5),
+                            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                          ),
+                        ),
+                      ),
+                      
+                      // Practice with Bot Button
+                      Container(
+                        margin: const EdgeInsets.symmetric(vertical: 10),
+                        child: ElevatedButton.icon(
+                          onPressed: () => _startBotGameSelection(context),
+                          icon: const Icon(Icons.smart_toy, size: 24),
+                          label: const Text(
+                            'Practice with Bot',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange.withOpacity(0.9),
+                            foregroundColor: Colors.white,
+                            elevation: 8,
+                            shadowColor: Colors.orange.withOpacity(0.5),
+                            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Overlay when sidebar is open - closes sidebar when tapped
+          if (_showSidebar)
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: _closeSidebar,
+                child: Container(
+                  color: Colors.black.withOpacity(0.3),
+                ),
+              ),
+            ),
+
+          // Sidebar that slides in/out
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            left: _showSidebar ? 0 : -200,
+            top: 0,
+            bottom: 0,
+            width: 200,
+            child: GestureDetector(
+              onTap: () {}, // Prevents tap from closing sidebar when tapping inside
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.95),
+                  border: const Border(right: BorderSide(color: Colors.green)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.3),
+                      blurRadius: 10,
+                      offset: const Offset(2, 0),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 50),
-                // Buttons
-                _greenButton("Login", () {
-                  // Navigate to GameScreen for now
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const GameScreen()),
-                  );
-                }),
-                const SizedBox(height: 20),
-                _greenButton("Create Account", () {
-                  // Navigate to GameScreen for now
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const GameScreen()),
-                  );
-                }),
-              ],
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Profile Picture with equipped avatar
+                      GestureDetector(
+                        onTap: () => _showStore(context),
+                        child: CircleAvatar(
+                          radius: 30,
+                          backgroundImage: _getProfileImage(),
+                          child: _shouldShowPlaceholder()
+                              ? const Icon(Icons.person, size: 25, color: Colors.white)
+                              : null,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      // User Name
+                      GestureDetector(
+                        onTap: _showNameChangeDialog,
+                        child: Text(
+                          widget.user.displayName ?? 'Player',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      
+                      // Email
+                      Text(
+                        widget.user.email ?? '',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.green,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      
+                      // Avatar Status
+                      if (_equippedAvatarPath != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          _getAvatarName(_equippedAvatarPath!),
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.green.shade700,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                      
+                      const SizedBox(height: 16),
+                      const Divider(color: Colors.green),
+                      const SizedBox(height: 8),
+                      
+                      // Player ID Section
+                      const Text(
+                        'Player ID:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      
+                      GestureDetector(
+                        onTap: () => _copyToClipboard(context),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                widget.user.uid.substring(0, 8) + '...',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.green,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const Icon(
+                              Icons.copy,
+                              size: 14,
+                              color: Colors.green,
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // Menu Items as bullet points
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildBulletMenuItem(
+                            text: 'Store',
+                            icon: Icons.store,
+                            onTap: () => _showStore(context),
+                          ),
+                          const SizedBox(height: 8),
+                          _buildBulletMenuItem(
+                            text: 'Player Vault',
+                            icon: Icons.security,
+                            onTap: _showPlayerVault,
+                          ),
+                          const SizedBox(height: 8),
+                          _buildBulletMenuItem(
+                            text: 'Deposit',
+                            icon: Icons.credit_card,
+                            onTap: _showDeposit,
+                          ),
+                        ],
+                      ),
+                      
+                      const Spacer(),
+                      
+                      // Stats Section
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.green.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Stats',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Games: 0',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                                Text(
+                                  'Wins: 0',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.green,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      // Edit Profile Button
+                      SizedBox(
+                        width: double.infinity,
+                        height: 32,
+                        child: OutlinedButton.icon(
+                          onPressed: _showNameChangeDialog,
+                          icon: const Icon(Icons.edit, size: 14),
+                          label: const Text('Change Name', style: TextStyle(fontSize: 12)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.green,
+                            side: const BorderSide(color: Colors.green),
+                            backgroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  String _getAvatarName(String path) {
+    switch (path) {
+      case 'assets/images/classic_goat.png':
+        return 'Classic Goat';
+      case 'assets/images/angry_goat.png':
+        return 'Angry Goat';
+      case 'assets/images/guot_goat.png':
+        return 'Guot Goat';
+      default:
+        return 'Classic Goat';
+    }
+  }
+
+  Widget _buildBulletMenuItem({
+    required String text,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+          child: Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: Colors.green.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  icon,
+                  size: 14,
+                  color: Colors.green,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  text,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Colors.green,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const Icon(
+                Icons.arrow_forward_ios,
+                size: 12,
+                color: Colors.green,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class NameChangeDialog extends StatefulWidget {
+  final User user;
+  final VoidCallback onNameUpdated;
+
+  const NameChangeDialog({
+    super.key,
+    required this.user,
+    required this.onNameUpdated,
+  });
+
+  @override
+  State<NameChangeDialog> createState() => _NameChangeDialogState();
+}
+
+class _NameChangeDialogState extends State<NameChangeDialog> {
+  final TextEditingController _nameController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController.text = widget.user.displayName ?? '';
+  }
+
+  Future<void> _updateName() async {
+    final String newName = _nameController.text.trim();
+
+    if (newName.isEmpty) {
+      _showError('Please enter your name');
+      return;
+    }
+
+    if (newName == widget.user.displayName) {
+      _showError('Name is the same as current');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await widget.user.updateDisplayName(newName);
+      await widget.user.reload();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Name updated successfully!'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        widget.onNameUpdated();
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      _showError('Failed to update name: $e');
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _showError(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        width: 300,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Change Name',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Google Sign-in user',
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.grey.shade600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'New Name',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person),
+                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+              maxLength: 30,
+            ),
+            const SizedBox(height: 16),
+            
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 35,
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Cancel', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: SizedBox(
+                    height: 35,
+                    child: ElevatedButton(
+                      onPressed: _isLoading ? null : _updateName,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: _isLoading
+                          ? const SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            )
+                          : const Text('Update', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
