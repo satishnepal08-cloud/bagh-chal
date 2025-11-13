@@ -1,40 +1,22 @@
-// server.js
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
 const cors = require('cors');
-
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Store game rooms
-const gameRooms = new Map();
+let games = {};
 
-// Health check endpoint
 app.get('/', (req, res) => {
   res.json({ 
-    status: 'Server is running', 
-    message: 'Bagh Chal Game Server',
-    timestamp: new Date().toISOString()
+    message: '🎮 Bagh Chal Multiplayer Server is RUNNING!',
+    status: 'OK ✅',
+    timestamp: new Date().toISOString(),
+    activeGames: Object.keys(games).length
   });
 });
 
-// Health check endpoint for your Flutter app
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', server: 'Bagh Chal Game Server' });
-});
-
-// Create room endpoint
+// In create-room endpoint
 app.post('/create-room', (req, res) => {
   const { roomCode, playerName } = req.body;
   
@@ -46,14 +28,20 @@ app.post('/create-room', (req, res) => {
     return res.status(400).json({ error: 'Room already exists' });
   }
   
+  // ✅ Set initial tiger positions and tigerTurn: true
   gameRooms.set(roomCode, {
     players: [playerName],
     gameState: {
-      tigerPositions: [],
+      tigerPositions: [
+        {dx: 16, dy: 16},
+        {dx: 284, dy: 16}, 
+        {dx: 16, dy: 284},
+        {dx: 284, dy: 284}
+      ],
       goatPositions: [],
       totalGoatsPlaced: 0,
       goatsCaptured: 0,
-      tigerTurn: true
+      tigerTurn: true  // ✅ Host (Tiger) starts first
     },
     createdAt: new Date()
   });
@@ -62,93 +50,58 @@ app.post('/create-room', (req, res) => {
   res.json({ success: true, roomCode });
 });
 
-// Check if room exists
-app.get('/room-exists/:roomCode', (req, res) => {
-  const { roomCode } = req.params;
-  const exists = gameRooms.has(roomCode);
-  res.json({ exists, roomCode });
-});
-
-// Join room endpoint
 app.post('/join-room', (req, res) => {
   const { roomCode, playerName } = req.body;
   
-  if (!roomCode || !playerName) {
-    return res.status(400).json({ error: 'Room code and player name required' });
-  }
-  
-  const room = gameRooms.get(roomCode);
-  if (!room) {
+  if (!games[roomCode]) {
     return res.status(404).json({ error: 'Room not found' });
   }
-  
-  if (room.players.length >= 2) {
+
+  if (games[roomCode].guest) {
     return res.status(400).json({ error: 'Room is full' });
   }
-  
-  room.players.push(playerName);
-  console.log(`Player ${playerName} joined room: ${roomCode}`);
-  
+
+  games[roomCode].guest = playerName;
+  console.log(`🎮 Player JOINED: ${roomCode} - ${playerName}`);
   res.json({ success: true, roomCode });
 });
 
-// Get game state
-app.get('/game-state/:roomCode', (req, res) => {
-  const { roomCode } = req.params;
-  const room = gameRooms.get(roomCode);
-  
-  if (!room) {
-    return res.status(404).json({ error: 'Room not found' });
-  }
-  
-  res.json({ 
-    success: true, 
-    gameState: room.gameState,
-    players: room.players
-  });
-});
-
-// Make move endpoint
 app.post('/make-move', (req, res) => {
   const { roomCode, gameState } = req.body;
   
-  if (!roomCode || !gameState) {
-    return res.status(400).json({ error: 'Room code and game state required' });
-  }
-  
-  const room = gameRooms.get(roomCode);
-  if (!room) {
+  if (!games[roomCode]) {
     return res.status(404).json({ error: 'Room not found' });
   }
+
+  games[roomCode].gameState = gameState;
+  games[roomCode].lastMove = Date.now();
   
-  // Update game state
-  room.gameState = gameState;
-  console.log(`Game state updated for room: ${roomCode}`);
-  
+  console.log(`🎯 Move in room: ${roomCode}`);
   res.json({ success: true });
 });
 
-// Clean up old rooms (optional)
-setInterval(() => {
-  const now = new Date();
-  let cleanedCount = 0;
+app.get('/game-state/:roomCode', (req, res) => {
+  const roomCode = req.params.roomCode;
   
-  for (const [roomCode, room] of gameRooms.entries()) {
-    const roomAge = now - room.createdAt;
-    // Remove rooms older than 2 hours
-    if (roomAge > 2 * 60 * 60 * 1000) {
-      gameRooms.delete(roomCode);
-      cleanedCount++;
-    }
+  if (!games[roomCode]) {
+    return res.status(404).json({ error: 'Room not found' });
   }
-  
-  if (cleanedCount > 0) {
-    console.log(`Cleaned up ${cleanedCount} old rooms`);
-  }
-}, 30 * 60 * 1000); // Run every 30 minutes
+
+  res.json({
+    success: true,
+    gameState: games[roomCode].gameState,
+    host: games[roomCode].host,
+    guest: games[roomCode].guest
+  });
+});
+
+app.get('/room-exists/:roomCode', (req, res) => {
+  const roomCode = req.params.roomCode;
+  res.json({ exists: !!games[roomCode] });
+});
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🎮 Bagh Chal Game Server running on port ${PORT}`);
-  console.log(`📍 Health check: http://localhost:${PORT}/health`);
+app.listen(PORT, () => {
+  console.log(`🚀 Bagh Chal Server running on port ${PORT}`);
+  console.log(`⭐ Permanent multiplayer server ready!`);
 });
