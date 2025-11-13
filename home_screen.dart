@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'matchmaking_screen.dart';
 import 'bot_selection_screen.dart';
 import 'store_screen.dart';
+import 'friend_game_screen.dart'; // Add this import
 
 class HomeScreen extends StatefulWidget {
   final User user;
@@ -83,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => const MatchmakingScreen(),
+        pageBuilder: (context, animation, secondaryAnimation) => MatchmakingScreen(user: widget.user),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           const begin = Offset(1.0, 0.0);
           const end = Offset.zero;
@@ -106,18 +109,119 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const BotSelectionScreen(),
+        builder: (context) => BotSelectionScreen(user: widget.user),
       ),
     );
   }
 
+  // NEW METHOD: Handle friend game with mic
+  void _startFriendGame(BuildContext context) {
+    _showCreateJoinDialog(context);
+  }
+
+  void _showCreateJoinDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.people, color: Colors.purple),
+            SizedBox(width: 8),
+            Text('Play with Friend', style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Choose an option to play with your friend:'),
+            SizedBox(height: 16),
+          ],
+        ),
+        actions: [
+          // Create Room Button
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              _createRoom(context);
+            },
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Create Room'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
+          ),
+          
+          // Join Room Button
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              _joinRoom(context);
+            },
+            icon: const Icon(Icons.login, size: 18),
+            label: const Text('Join Room'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _createRoom(BuildContext context) {
+    // Generate a unique room code
+    String roomCode = _generateRoomCode();
+    
+    // Navigate to waiting room
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FriendGameScreen(
+          user: widget.user,
+          roomCode: roomCode,
+          isHost: true,
+        ),
+      ),
+    );
+  }
+
+  void _joinRoom(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => JoinRoomDialog(
+        onJoin: (roomCode) {
+          Navigator.pop(context);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => FriendGameScreen(
+                user: widget.user,
+                roomCode: roomCode,
+                isHost: false,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String _generateRoomCode() {
+    // Generate a 6-character alphanumeric code
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final random = Random();
+    return String.fromCharCodes(
+      Iterable.generate(6, (_) => chars.codeUnitAt(random.nextInt(chars.length)))
+    );
+  }
+
   void _showStore(BuildContext context) {
-    // Close sidebar first
     setState(() {
       _showSidebar = false;
     });
     
-    // Navigate to store after sidebar animation completes
     Future.delayed(const Duration(milliseconds: 300), () {
       Navigator.push(
         context,
@@ -247,6 +351,29 @@ class _HomeScreenState extends State<HomeScreen> {
                             foregroundColor: Colors.white,
                             elevation: 8,
                             shadowColor: Colors.blue.withOpacity(0.5),
+                            padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                          ),
+                        ),
+                      ),
+                      
+                      // NEW: Play with Friend Button
+                      Container(
+                        margin: const EdgeInsets.symmetric(vertical: 10),
+                        child: ElevatedButton.icon(
+                          onPressed: () => _startFriendGame(context),
+                          icon: const Icon(Icons.people_alt, size: 24),
+                          label: const Text(
+                            'Play with Friend',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple.withOpacity(0.9),
+                            foregroundColor: Colors.white,
+                            elevation: 8,
+                            shadowColor: Colors.purple.withOpacity(0.5),
                             padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(15),
@@ -568,6 +695,92 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// NEW: Join Room Dialog
+class JoinRoomDialog extends StatefulWidget {
+  final Function(String) onJoin;
+
+  const JoinRoomDialog({super.key, required this.onJoin});
+
+  @override
+  State<JoinRoomDialog> createState() => _JoinRoomDialogState();
+}
+
+class _JoinRoomDialogState extends State<JoinRoomDialog> {
+  final TextEditingController _roomCodeController = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        width: 300,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.login, color: Colors.blue),
+                SizedBox(width: 8),
+                Text(
+                  'Join Room',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _roomCodeController,
+              decoration: const InputDecoration(
+                labelText: 'Room Code',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.code),
+                hintText: 'Enter 6-digit code',
+              ),
+              textCapitalization: TextCapitalization.characters,
+              maxLength: 6,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      final roomCode = _roomCodeController.text.trim().toUpperCase();
+                      if (roomCode.length == 6) {
+                        widget.onJoin(roomCode);
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Please enter a valid 6-digit room code'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Join'),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
